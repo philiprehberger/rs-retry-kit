@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Add `retry_if()` function — retries only when a predicate returns true for the error
+- Add `on_retry` callback to `RetryOptions` — observe retries with attempt number and delay
+- Add `Debug` impl for `CircuitBreaker`
+- Add `failures()` and `failure_threshold()` getters on `CircuitBreaker`
+
 ## 0.2.0
 
 - Add `Display` trait for `Backoff` enum

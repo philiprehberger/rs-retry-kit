@@ -6,7 +6,7 @@ Async retry with exponential backoff and circuit breaker for Rust.
 
 ```toml
 [dependencies]
-philiprehberger-retry-kit = "0.1"
+philiprehberger-retry-kit = "0.3"
 ```
 
 ## Usage
@@ -71,6 +71,29 @@ match cb.call(|| fetch_data()) {
 
 // Manually reset the circuit breaker
 cb.reset();
+```
+
+### Conditional Retry
+
+```rust
+use philiprehberger_retry_kit::retry_if;
+
+let result = retry_if(
+    RetryOptions::default(),
+    || might_fail(),
+    |err| err.is_transient(),  // only retry transient errors
+);
+```
+
+### Retry Callbacks
+
+```rust
+let opts = RetryOptions::default()
+    .on_retry(|attempt, delay| {
+        println!("Retry #{}, waiting {:?}", attempt, delay);
+    });
+
+let result = retry(opts, || fetch_data());
 ```
 
 ## License

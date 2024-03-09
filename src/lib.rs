@@ -20,13 +20,39 @@ impl fmt::Display for Backoff {
 }
 
 /// Configuration for retry behavior.
-#[derive(Debug, Clone)]
 pub struct RetryOptions {
     pub max_attempts: u32,
     pub backoff: Backoff,
     pub initial_delay: Duration,
     pub max_delay: Duration,
     pub jitter: bool,
+    on_retry: Option<Box<dyn Fn(u32, &Duration) + Send + Sync>>,
+}
+
+impl fmt::Debug for RetryOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RetryOptions")
+            .field("max_attempts", &self.max_attempts)
+            .field("backoff", &self.backoff)
+            .field("initial_delay", &self.initial_delay)
+            .field("max_delay", &self.max_delay)
+            .field("jitter", &self.jitter)
+            .field("on_retry", &self.on_retry.as_ref().map(|_| "Fn(u32, &Duration)"))
+            .finish()
+    }
+}
+
+impl Clone for RetryOptions {
+    fn clone(&self) -> Self {
+        Self {
+            max_attempts: self.max_attempts,
+            backoff: self.backoff,
+            initial_delay: self.initial_delay,
+            max_delay: self.max_delay,
+            jitter: self.jitter,
+            on_retry: None,
+        }
+    }
 }
 
 impl Default for RetryOptions {
@@ -37,6 +63,7 @@ impl Default for RetryOptions {
             initial_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(30),
             jitter: true,
+            on_retry: None,
         }
     }
 }
@@ -64,6 +91,14 @@ impl RetryOptions {
 
     pub fn jitter(mut self, j: bool) -> Self {
         self.jitter = j;
+        self
+    }
+
+    pub fn on_retry<F>(mut self, f: F) -> Self
+    where
+        F: Fn(u32, &Duration) + Send + Sync + 'static,
+    {
+        self.on_retry = Some(Box::new(f));
         self
     }
 }
@@ -122,6 +157,9 @@ where
                 last_error = Some(e);
                 if attempt < opts.max_attempts {
                     let delay = calculate_delay(attempt, &opts);
+                    if let Some(ref cb) = opts.on_retry {
+                        cb(attempt, &delay);
+                    }
                     std::thread::sleep(delay);
                 }
             }
@@ -130,6 +168,41 @@ where
 
     Err(RetryError {
         attempts: opts.max_attempts,
+        last_error: Box::new(last_error.unwrap()),
+    })
+}
+
+/// Retry a synchronous function, but only retry when the predicate returns true for the error.
+pub fn retry_if<T, E, F, P>(opts: RetryOptions, mut f: F, predicate: P) -> Result<T, RetryError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    F: FnMut() -> Result<T, E>,
+    P: Fn(&E) -> bool,
+{
+    let mut last_error = None;
+    let mut actual_attempts = 0;
+
+    for attempt in 1..=opts.max_attempts {
+        actual_attempts = attempt;
+        match f() {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                let should_retry = predicate(&e);
+                last_error = Some(e);
+                if !should_retry || attempt >= opts.max_attempts {
+                    break;
+                }
+                let delay = calculate_delay(attempt, &opts);
+                if let Some(ref cb) = opts.on_retry {
+                    cb(attempt, &delay);
+                }
+                std::thread::sleep(delay);
+            }
+        }
+    }
+
+    Err(RetryError {
+        attempts: actual_attempts,
         last_error: Box::new(last_error.unwrap()),
     })
 }
@@ -151,6 +224,9 @@ where
                 last_error = Some(e);
                 if attempt < opts.max_attempts {
                     let delay = calculate_delay(attempt, &opts);
+                    if let Some(ref cb) = opts.on_retry {
+                        cb(attempt, &delay);
+                    }
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -245,6 +321,18 @@ pub struct CircuitBreaker {
     half_open_attempts: u32,
 }
 
+impl fmt::Debug for CircuitBreaker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CircuitBreaker")
+            .field("failure_threshold", &self.failure_threshold)
+            .field("reset_timeout", &self.reset_timeout)
+            .field("half_open_max_attempts", &self.half_open_max_attempts)
+            .field("state", &self.state)
+            .field("failures", &self.failures)
+            .finish()
+    }
+}
+
 impl CircuitBreaker {
     pub fn new(failure_threshold: u32, reset_timeout: Duration) -> Self {
         Self {
@@ -266,6 +354,16 @@ impl CircuitBreaker {
 
     pub fn state(&self) -> CircuitState {
         self.state
+    }
+
+    /// Returns the current failure count.
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
+
+    /// Returns the failure threshold.
+    pub fn failure_threshold(&self) -> u32 {
+        self.failure_threshold
     }
 
     /// Reset the circuit breaker to the closed state.
@@ -546,5 +644,91 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn test_retry_if_skips_non_retryable() {
+        let mut attempts = 0;
+        let result = retry_if(
+            RetryOptions::default()
+                .max_attempts(5)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || {
+                attempts += 1;
+                Err::<i32, _>(TestError("permanent".into()))
+            },
+            |e: &TestError| e.0 != "permanent",
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn test_retry_if_retries_retryable() {
+        let mut attempts = 0;
+        let result = retry_if(
+            RetryOptions::default()
+                .max_attempts(3)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(TestError("transient".into()))
+                } else {
+                    Ok(42)
+                }
+            },
+            |e: &TestError| e.0 == "transient",
+        );
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn test_on_retry_callback() {
+        use std::sync::{Arc, Mutex};
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log2 = log.clone();
+
+        let mut attempts = 0;
+        let _ = retry(
+            RetryOptions::default()
+                .max_attempts(3)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false)
+                .on_retry(move |attempt, _delay| {
+                    log2.lock().unwrap().push(attempt);
+                }),
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(TestError("fail".into()))
+                } else {
+                    Ok(42)
+                }
+            },
+        );
+
+        let logged = log.lock().unwrap();
+        assert_eq!(*logged, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_circuit_breaker_debug() {
+        let cb = CircuitBreaker::new(3, Duration::from_secs(30));
+        let debug = format!("{:?}", cb);
+        assert!(debug.contains("CircuitBreaker"));
+        assert!(debug.contains("failure_threshold"));
+    }
+
+    #[test]
+    fn test_circuit_breaker_failures_getter() {
+        let mut cb = CircuitBreaker::new(3, Duration::from_secs(30));
+        assert_eq!(cb.failures(), 0);
+        assert_eq!(cb.failure_threshold(), 3);
+        let _ = cb.call(|| Err::<i32, _>(TestError("fail".into())));
+        assert_eq!(cb.failures(), 1);
     }
 }
