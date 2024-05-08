@@ -19,6 +19,9 @@ impl fmt::Display for Backoff {
     }
 }
 
+/// Callback invoked on each retry attempt.
+type OnRetryFn = Box<dyn Fn(u32, &Duration) + Send + Sync>;
+
 /// Configuration for retry behavior.
 pub struct RetryOptions {
     pub max_attempts: u32,
@@ -26,7 +29,7 @@ pub struct RetryOptions {
     pub initial_delay: Duration,
     pub max_delay: Duration,
     pub jitter: bool,
-    on_retry: Option<Box<dyn Fn(u32, &Duration) + Send + Sync>>,
+    on_retry: Option<OnRetryFn>,
 }
 
 impl fmt::Debug for RetryOptions {
