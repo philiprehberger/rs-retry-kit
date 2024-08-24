@@ -1,6 +1,6 @@
 [package]
 name = "philiprehberger-retry-kit"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Philip Rehberger"]
 description = "Async retry with exponential backoff and circuit breaker for Rust"
