@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Add `with_deadline()` on `RetryOptions` — absolute deadline after which retries stop
+- Add `with_total_timeout()` on `RetryOptions` — relative timeout from the start of execution
+- Deadline checks apply to `retry()`, `retry_if()`, and `retry_async()`
+- Add `CircuitBreakerMetrics` struct with `total_calls`, `successes`, `failures`, `consecutive_failures`, and `state`
+- Add `metrics()` method on `CircuitBreaker` returning a metrics snapshot
+- Add `consecutive_failures()` getter on `CircuitBreaker`
+- Add `last_failure_time()` getter on `CircuitBreaker`
+
 ## 0.3.5
 
 - Add readme, rust-version, documentation to Cargo.toml
