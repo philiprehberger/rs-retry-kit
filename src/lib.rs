@@ -1,3 +1,17 @@
+//! Async retry with exponential backoff and circuit breaker.
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use philiprehberger_retry_kit::{retry, RetryOptions};
+//!
+//! # fn main() {
+//! let result = retry(RetryOptions::default(), || {
+//!     Ok::<_, String>("success")
+//! });
+//! # }
+//! ```
+
 use std::fmt;
 use std::time::{Duration, Instant};
 
