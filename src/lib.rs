@@ -2,14 +2,13 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust
 //! use philiprehberger_retry_kit::{retry, RetryOptions};
 //!
-//! # fn main() {
 //! let result = retry(RetryOptions::default(), || {
-//!     Ok::<_, String>("success")
+//!     Ok::<_, std::io::Error>(42)
 //! });
-//! # }
+//! assert_eq!(result.unwrap(), 42);
 //! ```
 
 use std::fmt;
