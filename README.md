@@ -3,6 +3,7 @@
 [![CI](https://github.com/philiprehberger/rs-retry-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/philiprehberger/rs-retry-kit/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/philiprehberger-retry-kit.svg)](https://crates.io/crates/philiprehberger-retry-kit)
 [![License](https://img.shields.io/github/license/philiprehberger/rs-retry-kit)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ec6cb9)](https://github.com/sponsors/philiprehberger)
 
 Async retry with exponential backoff and circuit breaker for Rust
 
