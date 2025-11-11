@@ -10,7 +10,7 @@ Async retry with exponential backoff and circuit breaker for Rust
 
 ```toml
 [dependencies]
-philiprehberger-retry-kit = "0.4.3"
+philiprehberger-retry-kit = "0.5.0"
 ```
 
 ## Usage
@@ -148,6 +148,47 @@ if let Some(t) = cb.last_failure_time() {
 
 Metrics are cumulative and survive `reset()`; only the consecutive failure counter and state are cleared.
 
+### Async Circuit Breaker
+
+```rust
+use philiprehberger_retry_kit::CircuitBreaker;
+use std::time::Duration;
+
+let mut cb = CircuitBreaker::new(5, Duration::from_secs(30));
+
+let result = cb.call_async(|| async {
+    fetch_data().await
+}).await;
+```
+
+### Circuit State Change Callback
+
+```rust
+use philiprehberger_retry_kit::{CircuitBreaker, CircuitState};
+use std::time::Duration;
+
+let mut cb = CircuitBreaker::new(3, Duration::from_secs(30))
+    .on_state_change(|from, to| {
+        println!("Circuit: {:?} -> {:?}", from, to);
+    });
+
+let _ = cb.call(|| fetch_data());
+```
+
+### Retry with Fallback
+
+Try a primary function with retries; if exhausted, try a fallback once:
+
+```rust
+use philiprehberger_retry_kit::{retry_with_fallback, RetryOptions};
+
+let result = retry_with_fallback(
+    RetryOptions::default(),
+    || primary_db_query(),
+    || replica_db_query(),  // fallback if primary exhausts retries
+);
+```
+
 ## API
 
 | Function / Type | Description |
@@ -155,12 +196,15 @@ Metrics are cumulative and survive `reset()`; only the consecutive failure count
 | `retry(opts, f)` | Retry a synchronous function with the given options |
 | `retry_if(opts, f, predicate)` | Retry a synchronous function only when the predicate returns true for the error |
 | `retry_async(opts, f)` | Retry an async function (requires `async` feature) |
+| `retry_with_fallback(opts, f, fallback)` | Retry primary function, then try fallback once on exhaustion |
 | `RetryOptions` | Configuration for retry behavior (max attempts, backoff, delays, jitter, deadline) |
 | `RetryOptions::default()` | Create default options (3 attempts, exponential backoff, 1s initial, 30s max, jitter on) |
 | `Backoff` | Backoff strategy enum: `Exponential`, `Linear`, `Fixed` |
 | `RetryError` | Error returned when all retry attempts are exhausted |
 | `CircuitBreaker::new(threshold, timeout)` | Create a circuit breaker with failure threshold and reset timeout |
 | `cb.call(f)` | Execute a function through the circuit breaker |
+| `cb.call_async(f)` | Execute an async function through the circuit breaker |
+| `cb.on_state_change(callback)` | Register a callback for circuit state transitions |
 | `cb.reset()` | Manually reset the circuit breaker to closed state |
 | `cb.half_open_max_attempts(n)` | Set max trial attempts allowed in half-open state |
 | `cb.state()` | Get current circuit state |

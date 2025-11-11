@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 (2026-04-06)
+
+- Add `call_async()` on `CircuitBreaker` for async circuit breaker support (requires `async` feature)
+- Add `on_state_change()` callback on `CircuitBreaker` for observing state transitions
+- Add `retry_with_fallback()` for retrying with a fallback function on exhaustion
+
 ## 0.4.4 (2026-03-31)
 
 - Standardize README to 3-badge format with emoji Support section
