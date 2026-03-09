@@ -1,0 +1,18 @@
+[package]
+name = "philiprehberger-retry-kit"
+version = "0.1.0"
+edition = "2021"
+authors = ["Philip Rehberger"]
+description = "Async retry with exponential backoff and circuit breaker for Rust"
+license = "MIT"
+repository = "https://github.com/philiprehberger/rs-retry-kit"
+keywords = ["retry", "backoff", "circuit-breaker", "async", "resilience"]
+categories = ["asynchronous", "network-programming"]
+
+[dependencies]
+tokio = { version = "1", features = ["time"], optional = true }
+rand = "0.8"
+
+[features]
+default = ["async"]
+async = ["tokio"]
