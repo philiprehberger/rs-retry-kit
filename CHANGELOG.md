@@ -1,13 +1,13 @@
 # Changelog
 
-## 0.3.0
+## 0.3.0 (2026-03-13)
 
 - Add `retry_if()` function — retries only when a predicate returns true for the error
 - Add `on_retry` callback to `RetryOptions` — observe retries with attempt number and delay
 - Add `Debug` impl for `CircuitBreaker`
 - Add `failures()` and `failure_threshold()` getters on `CircuitBreaker`
 
-## 0.2.0
+## 0.2.0 (2026-03-12)
 
 - Add `Display` trait for `Backoff` enum
 - Add `PartialEq` and `Eq` derives for `Backoff`
@@ -16,6 +16,6 @@
 - Add overflow protection for exponential backoff calculation
 - Add comprehensive test suite covering retry, backoff strategies, circuit breaker states
 
-## 0.1.0
+## 0.1.0 (2026-03-09)
 
 - Initial release
