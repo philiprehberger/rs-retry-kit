@@ -61,12 +61,16 @@ let result = retry(presets::aggressive(), || critical_op());
 use philiprehberger_retry_kit::CircuitBreaker;
 use std::time::Duration;
 
-let mut cb = CircuitBreaker::new(5, Duration::from_secs(30));
+let mut cb = CircuitBreaker::new(5, Duration::from_secs(30))
+    .half_open_max_attempts(2); // allow 2 trial requests in half-open state
 
 match cb.call(|| fetch_data()) {
     Ok(data) => println!("Got: {:?}", data),
     Err(e) => eprintln!("Failed: {}", e),
 }
+
+// Manually reset the circuit breaker
+cb.reset();
 ```
 
 ## License
