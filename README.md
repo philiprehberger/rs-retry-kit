@@ -10,7 +10,7 @@ Async retry with exponential backoff and circuit breaker for Rust.
 
 ```toml
 [dependencies]
-philiprehberger-retry-kit = "0.3.5"
+philiprehberger-retry-kit = "0.4.0"
 ```
 
 ## Usage
@@ -100,6 +100,55 @@ let opts = RetryOptions::default()
 let result = retry(opts, || fetch_data());
 ```
 
+### Deadline / Total Timeout
+
+Stop retrying after an absolute deadline or a relative timeout, regardless of remaining attempts:
+
+```rust
+use std::time::{Duration, Instant};
+
+// Absolute deadline
+let opts = RetryOptions::default()
+    .max_attempts(10)
+    .with_deadline(Instant::now() + Duration::from_secs(30));
+
+let result = retry(opts, || fetch_data());
+
+// Relative timeout (converted to a deadline when the retry loop starts)
+let opts = RetryOptions::default()
+    .max_attempts(10)
+    .with_total_timeout(Duration::from_secs(30));
+
+let result = retry(opts, || fetch_data());
+```
+
+Both options can be combined; the earlier of the two takes effect. Deadline support works with `retry()`, `retry_if()`, and `retry_async()`.
+
+### Circuit Breaker Metrics
+
+Inspect cumulative statistics and timing information from a `CircuitBreaker`:
+
+```rust
+use philiprehberger_retry_kit::CircuitBreaker;
+use std::time::Duration;
+
+let mut cb = CircuitBreaker::new(5, Duration::from_secs(30));
+
+let _ = cb.call(|| ok_or_fail());
+
+// Snapshot of cumulative metrics
+let m = cb.metrics();
+println!("calls={} ok={} err={}", m.total_calls, m.successes, m.failures);
+println!("consecutive_failures={} state={}", m.consecutive_failures, m.state);
+
+// Individual accessors
+println!("consecutive: {}", cb.consecutive_failures());
+if let Some(t) = cb.last_failure_time() {
+    println!("last failure was {:?} ago", t.elapsed());
+}
+```
+
+Metrics are cumulative and survive `reset()`; only the consecutive failure counter and state are cleared.
 
 ## Development
 

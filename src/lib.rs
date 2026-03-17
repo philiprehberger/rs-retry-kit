@@ -1,5 +1,5 @@
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Backoff strategy for retry delays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,10 @@ pub struct RetryOptions {
     pub initial_delay: Duration,
     pub max_delay: Duration,
     pub jitter: bool,
+    /// Absolute deadline after which retries stop, regardless of remaining attempts.
+    pub deadline: Option<Instant>,
+    /// Relative timeout from the start of execution.
+    pub total_timeout: Option<Duration>,
     on_retry: Option<OnRetryFn>,
 }
 
@@ -40,6 +44,8 @@ impl fmt::Debug for RetryOptions {
             .field("initial_delay", &self.initial_delay)
             .field("max_delay", &self.max_delay)
             .field("jitter", &self.jitter)
+            .field("deadline", &self.deadline)
+            .field("total_timeout", &self.total_timeout)
             .field("on_retry", &self.on_retry.as_ref().map(|_| "Fn(u32, &Duration)"))
             .finish()
     }
@@ -53,6 +59,8 @@ impl Clone for RetryOptions {
             initial_delay: self.initial_delay,
             max_delay: self.max_delay,
             jitter: self.jitter,
+            deadline: self.deadline,
+            total_timeout: self.total_timeout,
             on_retry: None,
         }
     }
@@ -66,6 +74,8 @@ impl Default for RetryOptions {
             initial_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(30),
             jitter: true,
+            deadline: None,
+            total_timeout: None,
             on_retry: None,
         }
     }
@@ -104,6 +114,34 @@ impl RetryOptions {
         self.on_retry = Some(Box::new(f));
         self
     }
+
+    /// Absolute deadline after which retries stop, regardless of remaining attempts.
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Relative timeout from the start of execution. Converted to an absolute deadline
+    /// when the retry loop begins.
+    pub fn with_total_timeout(mut self, timeout: Duration) -> Self {
+        self.total_timeout = Some(timeout);
+        self
+    }
+}
+
+/// Resolve the effective deadline from `deadline` and `total_timeout`.
+fn resolve_deadline(opts: &RetryOptions) -> Option<Instant> {
+    match (opts.deadline, opts.total_timeout) {
+        (Some(d), Some(t)) => Some(d.min(Instant::now() + t)),
+        (Some(d), None) => Some(d),
+        (None, Some(t)) => Some(Instant::now() + t),
+        (None, None) => None,
+    }
+}
+
+/// Returns `true` if the deadline has been exceeded.
+fn past_deadline(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
 }
 
 /// Error returned when all retry attempts are exhausted.
@@ -151,13 +189,18 @@ where
     E: std::error::Error + Send + Sync + 'static,
     F: FnMut() -> Result<T, E>,
 {
+    let deadline = resolve_deadline(&opts);
     let mut last_error = None;
 
     for attempt in 1..=opts.max_attempts {
+        if attempt > 1 && past_deadline(deadline) {
+            break;
+        }
+
         match f() {
             Ok(val) => return Ok(val),
             Err(e) => {
-                last_error = Some(e);
+                last_error = Some((attempt, e));
                 if attempt < opts.max_attempts {
                     let delay = calculate_delay(attempt, &opts);
                     if let Some(ref cb) = opts.on_retry {
@@ -169,9 +212,10 @@ where
         }
     }
 
+    let (attempts, err) = last_error.unwrap();
     Err(RetryError {
-        attempts: opts.max_attempts,
-        last_error: Box::new(last_error.unwrap()),
+        attempts,
+        last_error: Box::new(err),
     })
 }
 
@@ -182,10 +226,15 @@ where
     F: FnMut() -> Result<T, E>,
     P: Fn(&E) -> bool,
 {
+    let deadline = resolve_deadline(&opts);
     let mut last_error = None;
     let mut actual_attempts = 0;
 
     for attempt in 1..=opts.max_attempts {
+        if attempt > 1 && past_deadline(deadline) {
+            break;
+        }
+
         actual_attempts = attempt;
         match f() {
             Ok(val) => return Ok(val),
@@ -218,13 +267,18 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
+    let deadline = resolve_deadline(&opts);
     let mut last_error = None;
 
     for attempt in 1..=opts.max_attempts {
+        if attempt > 1 && past_deadline(deadline) {
+            break;
+        }
+
         match f().await {
             Ok(val) => return Ok(val),
             Err(e) => {
-                last_error = Some(e);
+                last_error = Some((attempt, e));
                 if attempt < opts.max_attempts {
                     let delay = calculate_delay(attempt, &opts);
                     if let Some(ref cb) = opts.on_retry {
@@ -236,9 +290,10 @@ where
         }
     }
 
+    let (attempts, err) = last_error.unwrap();
     Err(RetryError {
-        attempts: opts.max_attempts,
-        last_error: Box::new(last_error.unwrap()),
+        attempts,
+        last_error: Box::new(err),
     })
 }
 
@@ -313,6 +368,21 @@ impl fmt::Display for CircuitOpenError {
 
 impl std::error::Error for CircuitOpenError {}
 
+/// Snapshot of circuit breaker metrics.
+#[derive(Debug, Clone)]
+pub struct CircuitBreakerMetrics {
+    /// Total number of calls made through the circuit breaker.
+    pub total_calls: u64,
+    /// Number of successful calls.
+    pub successes: u64,
+    /// Number of failed calls.
+    pub failures: u64,
+    /// Current number of consecutive failures.
+    pub consecutive_failures: u32,
+    /// Current circuit state.
+    pub state: CircuitState,
+}
+
 /// A circuit breaker that tracks failures and short-circuits when a threshold is reached.
 pub struct CircuitBreaker {
     failure_threshold: u32,
@@ -320,8 +390,11 @@ pub struct CircuitBreaker {
     half_open_max_attempts: u32,
     state: CircuitState,
     failures: u32,
-    last_failure_time: Option<std::time::Instant>,
+    last_failure_time: Option<Instant>,
     half_open_attempts: u32,
+    total_calls: u64,
+    total_successes: u64,
+    total_failures: u64,
 }
 
 impl fmt::Debug for CircuitBreaker {
@@ -346,6 +419,9 @@ impl CircuitBreaker {
             failures: 0,
             last_failure_time: None,
             half_open_attempts: 0,
+            total_calls: 0,
+            total_successes: 0,
+            total_failures: 0,
         }
     }
 
@@ -370,11 +446,35 @@ impl CircuitBreaker {
     }
 
     /// Reset the circuit breaker to the closed state.
+    ///
+    /// This resets the state and consecutive failure count but preserves
+    /// cumulative metrics (`total_calls`, `successes`, `failures`).
     pub fn reset(&mut self) {
         self.state = CircuitState::Closed;
         self.failures = 0;
         self.last_failure_time = None;
         self.half_open_attempts = 0;
+    }
+
+    /// Returns the current number of consecutive failures.
+    pub fn consecutive_failures(&self) -> u32 {
+        self.failures
+    }
+
+    /// Returns the time of the last recorded failure, if any.
+    pub fn last_failure_time(&self) -> Option<Instant> {
+        self.last_failure_time
+    }
+
+    /// Returns a snapshot of the circuit breaker's metrics.
+    pub fn metrics(&self) -> CircuitBreakerMetrics {
+        CircuitBreakerMetrics {
+            total_calls: self.total_calls,
+            successes: self.total_successes,
+            failures: self.total_failures,
+            consecutive_failures: self.failures,
+            state: self.state,
+        }
     }
 
     pub fn call<T, E, F>(&mut self, f: F) -> Result<T, Box<dyn std::error::Error>>
@@ -403,8 +503,11 @@ impl CircuitBreaker {
             self.half_open_attempts += 1;
         }
 
+        self.total_calls += 1;
+
         match f() {
             Ok(val) => {
+                self.total_successes += 1;
                 if self.state == CircuitState::HalfOpen {
                     self.state = CircuitState::Closed;
                 }
@@ -412,8 +515,9 @@ impl CircuitBreaker {
                 Ok(val)
             }
             Err(e) => {
+                self.total_failures += 1;
                 self.failures += 1;
-                self.last_failure_time = Some(std::time::Instant::now());
+                self.last_failure_time = Some(Instant::now());
 
                 if self.state == CircuitState::HalfOpen || self.failures >= self.failure_threshold {
                     self.state = CircuitState::Open;
@@ -733,5 +837,147 @@ mod tests {
         assert_eq!(cb.failure_threshold(), 3);
         let _ = cb.call(|| Err::<i32, _>(TestError("fail".into())));
         assert_eq!(cb.failures(), 1);
+    }
+
+    // --- Deadline / total_timeout tests ---
+
+    #[test]
+    fn test_retry_with_deadline_already_passed() {
+        let deadline = Instant::now() - Duration::from_secs(1);
+        let mut attempts = 0;
+        let result = retry(
+            RetryOptions::default()
+                .max_attempts(5)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false)
+                .with_deadline(deadline),
+            || {
+                attempts += 1;
+                Err::<i32, _>(TestError("fail".into()))
+            },
+        );
+        // First attempt always runs; deadline checked before attempt 2+
+        assert_eq!(attempts, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_retry_with_total_timeout_stops_early() {
+        let mut attempts = 0;
+        let result = retry(
+            RetryOptions::default()
+                .max_attempts(100)
+                .initial_delay(Duration::from_millis(20))
+                .jitter(false)
+                .with_total_timeout(Duration::from_millis(50)),
+            || {
+                attempts += 1;
+                Err::<i32, _>(TestError("fail".into()))
+            },
+        );
+        assert!(result.is_err());
+        // Should have stopped well before 100 attempts
+        assert!(attempts < 100, "expected early stop, got {} attempts", attempts);
+    }
+
+    #[test]
+    fn test_retry_with_deadline_succeeds_before_deadline() {
+        let mut attempts = 0;
+        let result = retry(
+            RetryOptions::default()
+                .max_attempts(5)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false)
+                .with_deadline(Instant::now() + Duration::from_secs(5)),
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(TestError("fail".into()))
+                } else {
+                    Ok(42)
+                }
+            },
+        );
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_retry_if_with_total_timeout() {
+        let mut attempts = 0;
+        let result = retry_if(
+            RetryOptions::default()
+                .max_attempts(100)
+                .initial_delay(Duration::from_millis(20))
+                .jitter(false)
+                .with_total_timeout(Duration::from_millis(50)),
+            || {
+                attempts += 1;
+                Err::<i32, _>(TestError("transient".into()))
+            },
+            |_: &TestError| true,
+        );
+        assert!(result.is_err());
+        assert!(attempts < 100, "expected early stop, got {} attempts", attempts);
+    }
+
+    // --- CircuitBreakerMetrics tests ---
+
+    #[test]
+    fn test_circuit_breaker_metrics() {
+        let mut cb = CircuitBreaker::new(5, Duration::from_secs(30));
+
+        let _ = cb.call(|| Ok::<_, TestError>(1));
+        let _ = cb.call(|| Ok::<_, TestError>(2));
+        let _ = cb.call(|| Err::<i32, _>(TestError("fail".into())));
+
+        let m = cb.metrics();
+        assert_eq!(m.total_calls, 3);
+        assert_eq!(m.successes, 2);
+        assert_eq!(m.failures, 1);
+        assert_eq!(m.consecutive_failures, 1);
+        assert_eq!(m.state, CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_metrics_after_reset() {
+        let mut cb = CircuitBreaker::new(2, Duration::from_secs(30));
+
+        let _ = cb.call(|| Err::<i32, _>(TestError("fail".into())));
+        let _ = cb.call(|| Err::<i32, _>(TestError("fail".into())));
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        cb.reset();
+
+        let m = cb.metrics();
+        // Cumulative metrics are preserved after reset
+        assert_eq!(m.total_calls, 2);
+        assert_eq!(m.failures, 2);
+        assert_eq!(m.consecutive_failures, 0);
+        assert_eq!(m.state, CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_consecutive_failures() {
+        let mut cb = CircuitBreaker::new(5, Duration::from_secs(30));
+        assert_eq!(cb.consecutive_failures(), 0);
+
+        let _ = cb.call(|| Err::<i32, _>(TestError("fail".into())));
+        assert_eq!(cb.consecutive_failures(), 1);
+
+        let _ = cb.call(|| Ok::<_, TestError>(1));
+        assert_eq!(cb.consecutive_failures(), 0);
+    }
+
+    #[test]
+    fn test_circuit_breaker_last_failure_time() {
+        let mut cb = CircuitBreaker::new(5, Duration::from_secs(30));
+        assert!(cb.last_failure_time().is_none());
+
+        let before = Instant::now();
+        let _ = cb.call(|| Err::<i32, _>(TestError("fail".into())));
+        let after = Instant::now();
+
+        let t = cb.last_failure_time().expect("should have a failure time");
+        assert!(t >= before && t <= after);
     }
 }
