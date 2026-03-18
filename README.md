@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/philiprehberger-retry-kit.svg)](https://crates.io/crates/philiprehberger-retry-kit)
 [![License](https://img.shields.io/github/license/philiprehberger/rs-retry-kit)](LICENSE)
 
-Async retry with exponential backoff and circuit breaker for Rust.
+Async retry with exponential backoff and circuit breaker for Rust
 
 ## Installation
 
@@ -149,6 +149,33 @@ if let Some(t) = cb.last_failure_time() {
 ```
 
 Metrics are cumulative and survive `reset()`; only the consecutive failure counter and state are cleared.
+
+## API
+
+| Function / Type | Description |
+|-----------------|-------------|
+| `retry(opts, f)` | Retry a synchronous function with the given options |
+| `retry_if(opts, f, predicate)` | Retry a synchronous function only when the predicate returns true for the error |
+| `retry_async(opts, f)` | Retry an async function (requires `async` feature) |
+| `RetryOptions` | Configuration for retry behavior (max attempts, backoff, delays, jitter, deadline) |
+| `RetryOptions::default()` | Create default options (3 attempts, exponential backoff, 1s initial, 30s max, jitter on) |
+| `Backoff` | Backoff strategy enum: `Exponential`, `Linear`, `Fixed` |
+| `RetryError` | Error returned when all retry attempts are exhausted |
+| `CircuitBreaker::new(threshold, timeout)` | Create a circuit breaker with failure threshold and reset timeout |
+| `cb.call(f)` | Execute a function through the circuit breaker |
+| `cb.reset()` | Manually reset the circuit breaker to closed state |
+| `cb.half_open_max_attempts(n)` | Set max trial attempts allowed in half-open state |
+| `cb.state()` | Get current circuit state |
+| `cb.metrics()` | Get a snapshot of cumulative metrics |
+| `cb.consecutive_failures()` | Get current consecutive failure count |
+| `cb.last_failure_time()` | Get the time of the last recorded failure |
+| `CircuitState` | Circuit state enum: `Closed`, `Open`, `HalfOpen` |
+| `CircuitBreakerMetrics` | Snapshot of circuit breaker metrics (total calls, successes, failures, state) |
+| `CircuitOpenError` | Error returned when the circuit breaker is open |
+| `presets::aggressive()` | Preset: 5 attempts, 500ms initial, 5s max |
+| `presets::gentle()` | Preset: 3 attempts, 2s initial, 30s max |
+| `presets::network_request()` | Preset: 3 attempts, 1s initial, 10s max |
+| `presets::database_query()` | Preset: 3 attempts, linear backoff, 500ms initial, no jitter |
 
 ## Development
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0
+## 0.4.0 (2026-03-17)
 
 - Add `with_deadline()` on `RetryOptions` — absolute deadline after which retries stop
 - Add `with_total_timeout()` on `RetryOptions` — relative timeout from the start of execution
