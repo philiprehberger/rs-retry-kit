@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 (2026-03-20)
+
+- Add crate-level doc comment with usage example
+
 ## 0.4.0 (2026-03-17)
 
 - Add `with_deadline()` on `RetryOptions` — absolute deadline after which retries stop

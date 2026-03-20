@@ -10,7 +10,7 @@ Async retry with exponential backoff and circuit breaker for Rust
 
 ```toml
 [dependencies]
-philiprehberger-retry-kit = "0.4.0"
+philiprehberger-retry-kit = "0.4.1"
 ```
 
 ## Usage
