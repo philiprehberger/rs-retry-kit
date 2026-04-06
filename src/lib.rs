@@ -12,6 +12,7 @@
 //! ```
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Backoff strategy for retry delays.
@@ -310,6 +311,32 @@ where
     })
 }
 
+/// Retry a synchronous function, then try a fallback once if all attempts are exhausted.
+pub fn retry_with_fallback<T, E, F, G>(
+    opts: RetryOptions,
+    f: F,
+    fallback: G,
+) -> Result<T, RetryError>
+where
+    F: FnMut() -> Result<T, E>,
+    G: FnOnce() -> Result<T, E>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    match retry(opts, f) {
+        Ok(val) => Ok(val),
+        Err(retry_err) => {
+            let attempts = retry_err.attempts;
+            match fallback() {
+                Ok(val) => Ok(val),
+                Err(e) => Err(RetryError {
+                    attempts: attempts + 1,
+                    last_error: Box::new(e),
+                }),
+            }
+        }
+    }
+}
+
 /// Preset configurations.
 pub mod presets {
     use super::*;
@@ -408,6 +435,7 @@ pub struct CircuitBreaker {
     total_calls: u64,
     total_successes: u64,
     total_failures: u64,
+    on_state_change: Option<Arc<dyn Fn(CircuitState, CircuitState) + Send + Sync>>,
 }
 
 impl fmt::Debug for CircuitBreaker {
@@ -435,12 +463,24 @@ impl CircuitBreaker {
             total_calls: 0,
             total_successes: 0,
             total_failures: 0,
+            on_state_change: None,
         }
     }
 
     /// Set the maximum number of trial attempts allowed in the half-open state.
     pub fn half_open_max_attempts(mut self, n: u32) -> Self {
         self.half_open_max_attempts = n;
+        self
+    }
+
+    /// Register a callback invoked whenever the circuit state changes.
+    ///
+    /// The callback receives `(old_state, new_state)`.
+    pub fn on_state_change<F>(mut self, f: F) -> Self
+    where
+        F: Fn(CircuitState, CircuitState) + Send + Sync + 'static,
+    {
+        self.on_state_change = Some(Arc::new(f));
         self
     }
 
@@ -463,10 +503,16 @@ impl CircuitBreaker {
     /// This resets the state and consecutive failure count but preserves
     /// cumulative metrics (`total_calls`, `successes`, `failures`).
     pub fn reset(&mut self) {
+        let old = self.state;
         self.state = CircuitState::Closed;
         self.failures = 0;
         self.last_failure_time = None;
         self.half_open_attempts = 0;
+        if old != CircuitState::Closed {
+            if let Some(ref cb) = self.on_state_change {
+                cb(old, CircuitState::Closed);
+            }
+        }
     }
 
     /// Returns the current number of consecutive failures.
@@ -498,8 +544,12 @@ impl CircuitBreaker {
         if self.state == CircuitState::Open {
             if let Some(last) = self.last_failure_time {
                 if last.elapsed() >= self.reset_timeout {
+                    let old = self.state;
                     self.state = CircuitState::HalfOpen;
                     self.half_open_attempts = 0;
+                    if let Some(ref cb) = self.on_state_change {
+                        cb(old, CircuitState::HalfOpen);
+                    }
                 } else {
                     return Err(Box::new(CircuitOpenError));
                 }
@@ -522,7 +572,11 @@ impl CircuitBreaker {
             Ok(val) => {
                 self.total_successes += 1;
                 if self.state == CircuitState::HalfOpen {
+                    let old = self.state;
                     self.state = CircuitState::Closed;
+                    if let Some(ref cb) = self.on_state_change {
+                        cb(old, CircuitState::Closed);
+                    }
                 }
                 self.failures = 0;
                 Ok(val)
@@ -533,7 +587,81 @@ impl CircuitBreaker {
                 self.last_failure_time = Some(Instant::now());
 
                 if self.state == CircuitState::HalfOpen || self.failures >= self.failure_threshold {
+                    let old = self.state;
                     self.state = CircuitState::Open;
+                    if old != CircuitState::Open {
+                        if let Some(ref cb) = self.on_state_change {
+                            cb(old, CircuitState::Open);
+                        }
+                    }
+                }
+
+                Err(Box::new(e))
+            }
+        }
+    }
+
+    /// Execute an async function through the circuit breaker (requires `async` feature).
+    #[cfg(feature = "async")]
+    pub async fn call_async<T, E, F, Fut>(&mut self, f: F) -> Result<T, Box<dyn std::error::Error>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        if self.state == CircuitState::Open {
+            if let Some(last) = self.last_failure_time {
+                if last.elapsed() >= self.reset_timeout {
+                    let old = self.state;
+                    self.state = CircuitState::HalfOpen;
+                    self.half_open_attempts = 0;
+                    if let Some(ref cb) = self.on_state_change {
+                        cb(old, CircuitState::HalfOpen);
+                    }
+                } else {
+                    return Err(Box::new(CircuitOpenError));
+                }
+            }
+        }
+
+        if self.state == CircuitState::HalfOpen
+            && self.half_open_attempts >= self.half_open_max_attempts
+        {
+            return Err(Box::new(CircuitOpenError));
+        }
+
+        if self.state == CircuitState::HalfOpen {
+            self.half_open_attempts += 1;
+        }
+
+        self.total_calls += 1;
+
+        match f().await {
+            Ok(val) => {
+                self.total_successes += 1;
+                if self.state == CircuitState::HalfOpen {
+                    let old = self.state;
+                    self.state = CircuitState::Closed;
+                    if let Some(ref cb) = self.on_state_change {
+                        cb(old, CircuitState::Closed);
+                    }
+                }
+                self.failures = 0;
+                Ok(val)
+            }
+            Err(e) => {
+                self.total_failures += 1;
+                self.failures += 1;
+                self.last_failure_time = Some(Instant::now());
+
+                if self.state == CircuitState::HalfOpen || self.failures >= self.failure_threshold {
+                    let old = self.state;
+                    self.state = CircuitState::Open;
+                    if old != CircuitState::Open {
+                        if let Some(ref cb) = self.on_state_change {
+                            cb(old, CircuitState::Open);
+                        }
+                    }
                 }
 
                 Err(Box::new(e))
@@ -992,5 +1120,135 @@ mod tests {
 
         let t = cb.last_failure_time().expect("should have a failure time");
         assert!(t >= before && t <= after);
+    }
+
+    // --- retry_with_fallback tests ---
+
+    #[test]
+    fn test_retry_with_fallback_primary_succeeds() {
+        let result = retry_with_fallback(
+            RetryOptions::default()
+                .max_attempts(3)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || Ok::<_, std::io::Error>(42),
+            || Ok(99),
+        );
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_retry_with_fallback_uses_fallback() {
+        let count = std::cell::Cell::new(0);
+        let result = retry_with_fallback(
+            RetryOptions::default()
+                .max_attempts(2)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || {
+                count.set(count.get() + 1);
+                Err::<i32, _>(std::io::Error::new(std::io::ErrorKind::Other, "fail"))
+            },
+            || Ok(99),
+        );
+        assert_eq!(result.unwrap(), 99);
+        assert_eq!(count.get(), 2);
+    }
+
+    #[test]
+    fn test_retry_with_fallback_both_fail() {
+        let result = retry_with_fallback(
+            RetryOptions::default()
+                .max_attempts(1)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || Err::<i32, _>(std::io::Error::new(std::io::ErrorKind::Other, "primary")),
+            || Err::<i32, _>(std::io::Error::new(std::io::ErrorKind::Other, "fallback")),
+        );
+        let err = result.unwrap_err();
+        assert!(err.last_error.to_string().contains("fallback"));
+    }
+
+    // --- on_state_change tests ---
+
+    #[test]
+    fn test_on_state_change_callback() {
+        use std::sync::{Arc, Mutex};
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let t = transitions.clone();
+        let mut cb = CircuitBreaker::new(2, Duration::from_millis(50))
+            .on_state_change(move |from, to| {
+                t.lock().unwrap().push((from, to));
+            });
+
+        let _ = cb.call(|| Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "e")));
+        let _ = cb.call(|| Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "e")));
+
+        let t = transitions.lock().unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0], (CircuitState::Closed, CircuitState::Open));
+    }
+
+    #[test]
+    fn test_on_state_change_on_reset() {
+        use std::sync::{Arc, Mutex};
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let t = transitions.clone();
+        let mut cb = CircuitBreaker::new(1, Duration::from_millis(50))
+            .on_state_change(move |from, to| {
+                t.lock().unwrap().push((from, to));
+            });
+
+        let _ = cb.call(|| Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "e")));
+        cb.reset();
+
+        let t = transitions.lock().unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[1], (CircuitState::Open, CircuitState::Closed));
+    }
+
+    #[test]
+    fn test_on_state_change_reset_when_already_closed() {
+        use std::sync::{Arc, Mutex};
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let t = transitions.clone();
+        let mut cb = CircuitBreaker::new(2, Duration::from_millis(50))
+            .on_state_change(move |from, to| {
+                t.lock().unwrap().push((from, to));
+            });
+
+        cb.reset();
+        assert!(transitions.lock().unwrap().is_empty());
+    }
+
+    // --- call_async tests ---
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_circuit_breaker_call_async() {
+        let mut cb = CircuitBreaker::new(2, Duration::from_millis(100));
+
+        let result = cb.call_async(|| async { Ok::<_, std::io::Error>(42) }).await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_circuit_breaker_call_async_opens_on_failures() {
+        let mut cb = CircuitBreaker::new(2, Duration::from_millis(100));
+
+        let _ = cb
+            .call_async(|| async {
+                Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "e"))
+            })
+            .await;
+        let _ = cb
+            .call_async(|| async {
+                Err::<(), _>(std::io::Error::new(std::io::ErrorKind::Other, "e"))
+            })
+            .await;
+
+        assert_eq!(cb.state(), CircuitState::Open);
     }
 }
