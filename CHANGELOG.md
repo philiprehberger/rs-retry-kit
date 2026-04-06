@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 (2026-04-06)
+
+- Upgrade `rand` from 0.8 to 0.10
+- Update CI checkout action to v6
+
 ## 0.5.0 (2026-04-06)
 
 - Add `call_async()` on `CircuitBreaker` for async circuit breaker support (requires `async` feature)
