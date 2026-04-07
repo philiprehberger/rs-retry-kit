@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0 (2026-04-06)
+
+- Add integration test suite under `tests/integration.rs`
+- Document feature flags (`async`) in README
+
 ## 0.6.0 (2026-04-06)
 
 - Upgrade `rand` from 0.8 to 0.10
