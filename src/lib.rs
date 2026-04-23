@@ -60,7 +60,10 @@ impl fmt::Debug for RetryOptions {
             .field("jitter", &self.jitter)
             .field("deadline", &self.deadline)
             .field("total_timeout", &self.total_timeout)
-            .field("on_retry", &self.on_retry.as_ref().map(|_| "Fn(u32, &Duration)"))
+            .field(
+                "on_retry",
+                &self.on_retry.as_ref().map(|_| "Fn(u32, &Duration)"),
+            )
             .finish()
     }
 }
@@ -167,7 +170,11 @@ pub struct RetryError {
 
 impl fmt::Display for RetryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "all {} attempts failed: {}", self.attempts, self.last_error)
+        write!(
+            f,
+            "all {} attempts failed: {}",
+            self.attempts, self.last_error
+        )
     }
 }
 
@@ -181,7 +188,8 @@ fn calculate_delay(attempt: u32, opts: &RetryOptions) -> Duration {
     let base = match opts.backoff {
         Backoff::Exponential => {
             let exponent = (attempt - 1).min(31);
-            opts.initial_delay.saturating_mul(2u32.saturating_pow(exponent))
+            opts.initial_delay
+                .saturating_mul(2u32.saturating_pow(exponent))
         }
         Backoff::Linear => opts.initial_delay.saturating_mul(attempt),
         Backoff::Fixed => opts.initial_delay,
@@ -885,9 +893,7 @@ mod tests {
     #[test]
     fn test_retry_error_source() {
         let result = retry(
-            RetryOptions::default()
-                .max_attempts(1)
-                .jitter(false),
+            RetryOptions::default().max_attempts(1).jitter(false),
             || Err::<i32, _>(TestError("root cause".into())),
         );
         let err = result.unwrap_err();
@@ -1018,7 +1024,11 @@ mod tests {
         );
         assert!(result.is_err());
         // Should have stopped well before 100 attempts
-        assert!(attempts < 100, "expected early stop, got {} attempts", attempts);
+        assert!(
+            attempts < 100,
+            "expected early stop, got {} attempts",
+            attempts
+        );
     }
 
     #[test]
@@ -1058,7 +1068,11 @@ mod tests {
             |_: &TestError| true,
         );
         assert!(result.is_err());
-        assert!(attempts < 100, "expected early stop, got {} attempts", attempts);
+        assert!(
+            attempts < 100,
+            "expected early stop, got {} attempts",
+            attempts
+        );
     }
 
     // --- CircuitBreakerMetrics tests ---
@@ -1176,8 +1190,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
         let transitions = Arc::new(Mutex::new(Vec::new()));
         let t = transitions.clone();
-        let mut cb = CircuitBreaker::new(2, Duration::from_millis(50))
-            .on_state_change(move |from, to| {
+        let mut cb =
+            CircuitBreaker::new(2, Duration::from_millis(50)).on_state_change(move |from, to| {
                 t.lock().unwrap().push((from, to));
             });
 
@@ -1194,8 +1208,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
         let transitions = Arc::new(Mutex::new(Vec::new()));
         let t = transitions.clone();
-        let mut cb = CircuitBreaker::new(1, Duration::from_millis(50))
-            .on_state_change(move |from, to| {
+        let mut cb =
+            CircuitBreaker::new(1, Duration::from_millis(50)).on_state_change(move |from, to| {
                 t.lock().unwrap().push((from, to));
             });
 
@@ -1212,8 +1226,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
         let transitions = Arc::new(Mutex::new(Vec::new()));
         let t = transitions.clone();
-        let mut cb = CircuitBreaker::new(2, Duration::from_millis(50))
-            .on_state_change(move |from, to| {
+        let mut cb =
+            CircuitBreaker::new(2, Duration::from_millis(50)).on_state_change(move |from, to| {
                 t.lock().unwrap().push((from, to));
             });
 
@@ -1228,7 +1242,9 @@ mod tests {
     async fn test_circuit_breaker_call_async() {
         let mut cb = CircuitBreaker::new(2, Duration::from_millis(100));
 
-        let result = cb.call_async(|| async { Ok::<_, std::io::Error>(42) }).await;
+        let result = cb
+            .call_async(|| async { Ok::<_, std::io::Error>(42) })
+            .await;
         assert_eq!(result.unwrap(), 42);
         assert_eq!(cb.state(), CircuitState::Closed);
     }

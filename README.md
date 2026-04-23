@@ -10,8 +10,20 @@ Async retry with exponential backoff and circuit breaker for Rust
 
 ```toml
 [dependencies]
-philiprehberger-retry-kit = "0.6.0"
+philiprehberger-retry-kit = "0.7.0"
 ```
+
+### Features
+
+The crate ships with the `async` feature enabled by default, which pulls in `tokio` and exposes `retry_async()` and `CircuitBreaker::call_async()`. To opt out, disable default features. To add the crate with the async feature explicitly:
+
+```bash
+cargo add philiprehberger-retry-kit --features async
+```
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `async` | yes | Enables async retry (`retry_async`) and async circuit breaker (`call_async`) via `tokio`. |
 
 ## Usage
 
