@@ -319,6 +319,89 @@ where
     })
 }
 
+/// Retry an async function, but only retry when the predicate returns true for the error
+/// (requires `async` feature).
+///
+/// Async counterpart to [`retry_if`]. Stops on the first error for which `predicate`
+/// returns `false`, returning that error wrapped in a [`RetryError`].
+#[cfg(feature = "async")]
+pub async fn retry_async_if<T, E, F, Fut, P>(
+    opts: RetryOptions,
+    mut f: F,
+    predicate: P,
+) -> Result<T, RetryError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    P: Fn(&E) -> bool,
+{
+    let deadline = resolve_deadline(&opts);
+    let mut last_error = None;
+    let mut actual_attempts = 0;
+
+    for attempt in 1..=opts.max_attempts {
+        if attempt > 1 && past_deadline(deadline) {
+            break;
+        }
+
+        actual_attempts = attempt;
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                let should_retry = predicate(&e);
+                last_error = Some(e);
+                if !should_retry || attempt >= opts.max_attempts {
+                    break;
+                }
+                let delay = calculate_delay(attempt, &opts);
+                if let Some(ref cb) = opts.on_retry {
+                    cb(attempt, &delay);
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    Err(RetryError {
+        attempts: actual_attempts,
+        last_error: Box::new(last_error.unwrap()),
+    })
+}
+
+/// Retry an async function, then try an async fallback once if all attempts are exhausted
+/// (requires `async` feature).
+///
+/// Async counterpart to [`retry_with_fallback`]. The fallback future is awaited only after the
+/// retry loop has been exhausted.
+#[cfg(feature = "async")]
+pub async fn retry_async_with_fallback<T, E, F, Fut, G, FutG>(
+    opts: RetryOptions,
+    f: F,
+    fallback: G,
+) -> Result<T, RetryError>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    G: FnOnce() -> FutG,
+    FutG: std::future::Future<Output = Result<T, E>>,
+{
+    match retry_async(opts, f).await {
+        Ok(val) => Ok(val),
+        Err(retry_err) => {
+            let attempts = retry_err.attempts;
+            match fallback().await {
+                Ok(val) => Ok(val),
+                Err(e) => Err(RetryError {
+                    attempts: attempts + 1,
+                    last_error: Box::new(e),
+                }),
+            }
+        }
+    }
+}
+
 /// Retry a synchronous function, then try a fallback once if all attempts are exhausted.
 pub fn retry_with_fallback<T, E, F, G>(
     opts: RetryOptions,
@@ -1266,5 +1349,103 @@ mod tests {
             .await;
 
         assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    // --- retry_async_if tests ---
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_retry_async_if_skips_non_retryable() {
+        let mut attempts = 0;
+        let result = retry_async_if(
+            RetryOptions::default()
+                .max_attempts(5)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || {
+                attempts += 1;
+                let n = attempts;
+                async move { Err::<i32, _>(TestError(format!("permanent-{}", n))) }
+            },
+            |e: &TestError| !e.0.starts_with("permanent"),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_retry_async_if_retries_retryable() {
+        let mut attempts = 0;
+        let result = retry_async_if(
+            RetryOptions::default()
+                .max_attempts(3)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || {
+                attempts += 1;
+                let n = attempts;
+                async move {
+                    if n < 3 {
+                        Err(TestError("transient".into()))
+                    } else {
+                        Ok(42)
+                    }
+                }
+            },
+            |e: &TestError| e.0 == "transient",
+        )
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 3);
+    }
+
+    // --- retry_async_with_fallback tests ---
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_retry_async_with_fallback_uses_primary_when_ok() {
+        let result = retry_async_with_fallback(
+            RetryOptions::default()
+                .max_attempts(2)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || async { Ok::<_, TestError>(1) },
+            || async { Ok::<_, TestError>(2) },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_retry_async_with_fallback_falls_back_on_exhaustion() {
+        let result = retry_async_with_fallback(
+            RetryOptions::default()
+                .max_attempts(2)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || async { Err::<i32, _>(TestError("primary failed".into())) },
+            || async { Ok::<_, TestError>(99) },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 99);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_retry_async_with_fallback_returns_fallback_error() {
+        let result = retry_async_with_fallback(
+            RetryOptions::default()
+                .max_attempts(2)
+                .initial_delay(Duration::from_millis(1))
+                .jitter(false),
+            || async { Err::<i32, _>(TestError("primary".into())) },
+            || async { Err::<i32, _>(TestError("fallback".into())) },
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("fallback"));
     }
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0 (2026-04-27)
+
+- Add `retry_async_if()` — async counterpart to `retry_if()`, retries only when a predicate returns true for the error (requires `async` feature)
+- Add `retry_async_with_fallback()` — async counterpart to `retry_with_fallback()`, runs an async fallback once after the retry loop is exhausted (requires `async` feature)
+
 ## 0.7.0 (2026-04-06)
 
 - Add integration test suite under `tests/integration.rs`

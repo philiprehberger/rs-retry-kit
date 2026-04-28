@@ -10,7 +10,7 @@ Async retry with exponential backoff and circuit breaker for Rust
 
 ```toml
 [dependencies]
-philiprehberger-retry-kit = "0.7.0"
+philiprehberger-retry-kit = "0.8.0"
 ```
 
 ### Features
@@ -57,6 +57,30 @@ use philiprehberger_retry_kit::{retry_async, RetryOptions};
 let result = retry_async(RetryOptions::default(), || async {
     fetch_data().await
 }).await;
+```
+
+### Async Conditional Retry
+
+```rust
+use philiprehberger_retry_kit::{retry_async_if, RetryOptions};
+
+let result = retry_async_if(
+    RetryOptions::default(),
+    || async { might_fail().await },
+    |err| err.is_transient(), // only retry transient errors
+).await;
+```
+
+### Async Retry with Fallback
+
+```rust
+use philiprehberger_retry_kit::{retry_async_with_fallback, RetryOptions};
+
+let result = retry_async_with_fallback(
+    RetryOptions::default(),
+    || async { primary_db_query().await },
+    || async { replica_db_query().await }, // fallback if primary exhausts retries
+).await;
 ```
 
 ### Presets
@@ -208,7 +232,9 @@ let result = retry_with_fallback(
 | `retry(opts, f)` | Retry a synchronous function with the given options |
 | `retry_if(opts, f, predicate)` | Retry a synchronous function only when the predicate returns true for the error |
 | `retry_async(opts, f)` | Retry an async function (requires `async` feature) |
+| `retry_async_if(opts, f, predicate)` | Retry an async function only when the predicate returns true for the error (requires `async` feature) |
 | `retry_with_fallback(opts, f, fallback)` | Retry primary function, then try fallback once on exhaustion |
+| `retry_async_with_fallback(opts, f, fallback)` | Retry primary async function, then try async fallback once on exhaustion (requires `async` feature) |
 | `RetryOptions` | Configuration for retry behavior (max attempts, backoff, delays, jitter, deadline) |
 | `RetryOptions::default()` | Create default options (3 attempts, exponential backoff, 1s initial, 30s max, jitter on) |
 | `Backoff` | Backoff strategy enum: `Exponential`, `Linear`, `Fixed` |
